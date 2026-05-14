@@ -140,8 +140,8 @@ def test_2_weeks_after_today() -> None:
 
 
 def test_compound_duration() -> None:
-    # 1 year and 2 months = 365 + 60 = 425 days
-    assert parse("1 year and 2 months after today", today=TODAY) == TODAY + timedelta(days=425)
+    # 1 year and 2 months after June 15 2025 = August 15 2026
+    assert parse("1 year and 2 months after today", today=TODAY) == date(2026, 8, 15)
 
 
 def test_compound_before_fixed_date() -> None:

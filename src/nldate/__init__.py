@@ -27,37 +27,30 @@ def parse(s: str, today: date | None = None) -> date:
 
     n = s.strip().lower()
 
-    # 1. Exact named dates
     for name, delta in _NAMED_DATES.items():
         if n == name:
             return today + timedelta(days=delta)
 
-    # 2. Weekday expressions: "next Monday", "last Friday", "this Wed", bare weekday
     r = _try_weekday(n, today)
     if r is not None:
         return r
 
-    # 3. "<N units> ago"
     r = _try_ago(n, today)
     if r is not None:
         return r
 
-    # 4. "in <N units>" or "<N units> from now/today"
     r = _try_simple_future(n, today)
     if r is not None:
         return r
 
-    # 5. "<N units> before/after <anchor>"
     r = _try_offset_anchor(n, today)
     if r is not None:
         return r
 
-    # 6. Calendar landmarks: end/start of month, next/last week/month/year
     r = _try_landmark(n, today)
     if r is not None:
         return r
 
-    # 7. Fall back to dateparser
     settings: dict[str, object] = {
         "RELATIVE_BASE": _to_dt(today),
         "PREFER_DAY_OF_MONTH": "first",
@@ -103,15 +96,20 @@ _WEEKDAYS: dict[str, int] = {
     "sun": 6,
 }
 
-_UNIT_MAP: dict[str, int] = {
+# days only (weeks count as days)
+_DAY_UNITS: dict[str, int] = {
     "day": 1,
     "days": 1,
     "week": 7,
     "weeks": 7,
-    "month": 30,
-    "months": 30,
-    "year": 365,
-    "years": 365,
+}
+
+# months (years = 12 months)
+_MONTH_UNITS: dict[str, int] = {
+    "month": 1,
+    "months": 1,
+    "year": 12,
+    "years": 12,
 }
 
 _WORDS: dict[str, int] = {
@@ -159,9 +157,11 @@ def _num(tok: str) -> int | None:
     return _WORDS.get(tok)
 
 
-def _parse_duration(text: str) -> int | None:
-    """'3 days', 'two weeks', '1 year and 2 months' -> days. None if no match."""
-    total = 0
+# Duration is (days, months) where months includes years*12
+def _parse_duration(text: str) -> tuple[int, int] | None:
+    """Parse a duration string into (extra_days, total_months)."""
+    total_days = 0
+    total_months = 0
     matched = False
     for part in re.split(r"\band\b|,", text):
         part = part.strip()
@@ -172,30 +172,39 @@ def _parse_duration(text: str) -> int | None:
         unit = m.group(2)
         if not unit.endswith("s"):
             unit += "s"
-        if n is None or unit not in _UNIT_MAP:
+        if n is None:
             return None
-        total += n * _UNIT_MAP[unit]
+        if unit in _DAY_UNITS:
+            total_days += n * _DAY_UNITS[unit]
+        elif unit in _MONTH_UNITS:
+            total_months += n * _MONTH_UNITS[unit]
+        else:
+            return None
         matched = True
-    return total if matched else None
+    return (total_days, total_months) if matched else None
 
 
-def _resolve(anchor: str, today: date) -> date | None:
-    """Resolve an anchor phrase to a date."""
-    for name, delta in _NAMED_DATES.items():
-        if anchor == name:
-            return today + timedelta(days=delta)
-    r = _try_weekday(anchor, today)
-    if r is not None:
-        return r
-    from datetime import datetime
+def _shift_months(d: date, months: int) -> date:
+    """Add (or subtract if negative) an exact number of months."""
+    import calendar
 
-    settings: dict[str, object] = {
-        "RELATIVE_BASE": _to_dt(today),
-        "PREFER_DAY_OF_MONTH": "first",
-        "RETURN_AS_TIMEZONE_AWARE": False,
-    }
-    parsed: datetime | None = dateparser.parse(anchor, settings=settings)
-    return parsed.date() if parsed else None
+    m = d.month - 1 + months
+    year = d.year + m // 12
+    month = m % 12 + 1
+    day = min(d.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def _add_dur(d: date, days: int, months: int) -> date:
+    if months:
+        d = _shift_months(d, months)
+    return d + timedelta(days=days)
+
+
+def _sub_dur(d: date, days: int, months: int) -> date:
+    if months:
+        d = _shift_months(d, -months)
+    return d - timedelta(days=days)
 
 
 def _try_weekday(s: str, today: date) -> date | None:
@@ -218,22 +227,40 @@ def _try_ago(s: str, today: date) -> date | None:
     m = re.match(r"^(.+?)\s+ago$", s)
     if not m:
         return None
-    days = _parse_duration(m.group(1))
-    return today - timedelta(days=days) if days is not None else None
+    dur = _parse_duration(m.group(1))
+    return _sub_dur(today, dur[0], dur[1]) if dur is not None else None
 
 
 def _try_simple_future(s: str, today: date) -> date | None:
     m = re.match(r"^in\s+(.+)$", s)
     if m:
-        days = _parse_duration(m.group(1))
-        if days is not None:
-            return today + timedelta(days=days)
+        dur = _parse_duration(m.group(1))
+        if dur is not None:
+            return _add_dur(today, dur[0], dur[1])
     m2 = re.match(r"^(.+?)\s+from\s+(?:now|today)$", s)
     if m2:
-        days = _parse_duration(m2.group(1))
-        if days is not None:
-            return today + timedelta(days=days)
+        dur = _parse_duration(m2.group(1))
+        if dur is not None:
+            return _add_dur(today, dur[0], dur[1])
     return None
+
+
+def _resolve(anchor: str, today: date) -> date | None:
+    for name, delta in _NAMED_DATES.items():
+        if anchor == name:
+            return today + timedelta(days=delta)
+    r = _try_weekday(anchor, today)
+    if r is not None:
+        return r
+    from datetime import datetime
+
+    settings: dict[str, object] = {
+        "RELATIVE_BASE": _to_dt(today),
+        "PREFER_DAY_OF_MONTH": "first",
+        "RETURN_AS_TIMEZONE_AWARE": False,
+    }
+    parsed: datetime | None = dateparser.parse(anchor, settings=settings)
+    return parsed.date() if parsed else None
 
 
 def _try_offset_anchor(s: str, today: date) -> date | None:
@@ -243,50 +270,43 @@ def _try_offset_anchor(s: str, today: date) -> date | None:
     dur_text = re.sub(r"^in\s+", "", m.group(1).strip())
     direction = m.group(2).strip()
     anchor_text = m.group(3).strip()
-    days = _parse_duration(dur_text)
-    if days is None:
+    dur = _parse_duration(dur_text)
+    if dur is None:
         return None
     anchor = _resolve(anchor_text, today)
     if anchor is None:
         return None
     if direction in ("before", "prior to"):
-        return anchor - timedelta(days=days)
-    return anchor + timedelta(days=days)
+        return _sub_dur(anchor, dur[0], dur[1])
+    return _add_dur(anchor, dur[0], dur[1])
 
 
 def _try_landmark(s: str, today: date) -> date | None:
     import calendar
 
-    # next/last/this week -> Monday of that week
     if s == "next week":
         return today + timedelta(days=7 - today.weekday())
     if s in ("last week", "previous week"):
         return today - timedelta(days=today.weekday() + 7)
 
-    # next/last/this month -> same day
     if s == "next month":
-        m, y = (today.month % 12) + 1, today.year + (today.month // 12)
-        return date(y, m, min(today.day, calendar.monthrange(y, m)[1]))
+        return _shift_months(today, 1)
     if s in ("last month", "previous month"):
-        m = today.month - 1 or 12
-        y = today.year - (1 if today.month == 1 else 0)
-        return date(y, m, min(today.day, calendar.monthrange(y, m)[1]))
+        return _shift_months(today, -1)
 
-    # next/last year
     if s == "next year":
-        return date(today.year + 1, today.month, today.day)
+        return _shift_months(today, 12)
     if s in ("last year", "previous year"):
-        return date(today.year - 1, today.month, today.day)
+        return _shift_months(today, -12)
 
-    # end/start of month (current or next/last)
     if "next month" in s:
-        m2 = (today.month % 12) + 1
-        y2 = today.year + (today.month // 12)
+        y2, m2 = (_shift_months(today, 1).year, _shift_months(today, 1).month)
     elif "last month" in s or "previous month" in s:
-        m2 = today.month - 1 or 12
-        y2 = today.year - (1 if today.month == 1 else 0)
+        y2, m2 = (_shift_months(today, -1).year, _shift_months(today, -1).month)
+    elif "next year" in s:
+        y2, m2 = today.year + 1, today.month
     else:
-        m2, y2 = today.month, today.year
+        y2, m2 = today.year, today.month
 
     last = calendar.monthrange(y2, m2)[1]
     if re.search(r"\bend of\b|\blast day of\b", s):
