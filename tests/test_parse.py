@@ -14,6 +14,7 @@ TODAY = date(2025, 6, 15)  # Sunday
 # Fixed / absolute dates
 # ---------------------------------------------------------------------------
 
+
 def test_iso_date() -> None:
     assert parse("2025-12-25", today=TODAY) == date(2025, 12, 25)
 
@@ -40,6 +41,7 @@ def test_month_year_only() -> None:
 # Named relative dates
 # ---------------------------------------------------------------------------
 
+
 def test_today() -> None:
     assert parse("today", today=TODAY) == TODAY
 
@@ -64,6 +66,7 @@ def test_day_before_yesterday() -> None:
 # Weekday expressions
 # ---------------------------------------------------------------------------
 
+
 def test_next_monday() -> None:
     # TODAY is Sunday (wd=6); next Monday is +1
     assert parse("next Monday", today=TODAY) == date(2025, 6, 16)
@@ -87,6 +90,7 @@ def test_next_tuesday() -> None:
 # ---------------------------------------------------------------------------
 # Relative durations ("in N units", "N units from now")
 # ---------------------------------------------------------------------------
+
 
 def test_in_3_days() -> None:
     assert parse("in 3 days", today=TODAY) == TODAY + timedelta(days=3)
@@ -115,6 +119,7 @@ def test_5_days_from_today() -> None:
 # ---------------------------------------------------------------------------
 # Offset before/after an anchor
 # ---------------------------------------------------------------------------
+
 
 def test_5_days_before_fixed_date() -> None:
     assert parse("5 days before December 1st, 2025", today=TODAY) == date(2025, 11, 26)
@@ -147,6 +152,7 @@ def test_compound_before_fixed_date() -> None:
 # ---------------------------------------------------------------------------
 # Edge cases
 # ---------------------------------------------------------------------------
+
 
 def test_default_today_used_when_not_provided() -> None:
     """When today is None, result should equal parsing with date.today()."""
