@@ -361,6 +361,40 @@ def _parse_calendar_landmark(s: str, today: date) -> date | None:
             return date(year, month, 1)
         return date(year, month, last_day)
 
+    # "first of january 2026", "january first 2026", "last of december"
+    m2 = re.match(
+        r"^(?:the\s+)?(first|last|\d+(?:st|nd|rd|th)?)\s+of\s+(\w+)(?:\s+(20\d{2}))?$",
+        s,
+    )
+    if not m2:
+        m2 = re.match(
+            r"^(\w+)\s+(first|last|\d+(?:st|nd|rd|th)?)(?:\s+(20\d{2}))?$",
+            s,
+        )
+        if m2:
+            # swap: month pos day
+            month_word, pos, yr = m2.group(1), m2.group(2), m2.group(3)
+        else:
+            month_word, pos, yr = None, None, None
+    else:
+        pos, month_word, yr = m2.group(1), m2.group(2), m2.group(3)
+
+    if month_word and month_word in _MONTHS and pos is not None:
+        import calendar as _cal
+
+        mo = _MONTHS[month_word]
+        y = int(yr) if yr else today.year
+        last = _cal.monthrange(y, mo)[1]
+        if pos == "first" or pos == "1st":
+            return date(y, mo, 1)
+        elif pos == "last":
+            return date(y, mo, last)
+        else:
+            # numeric day like "15th"
+            day_num = int(re.sub(r"\D", "", pos))
+            if 1 <= day_num <= last:
+                return date(y, mo, day_num)
+
     # Determine which month/year we're talking about
     if "next month" in s:
         if today.month == 12:
@@ -379,9 +413,9 @@ def _parse_calendar_landmark(s: str, today: date) -> date | None:
 
     last_day = calendar.monthrange(year, month)[1]
 
-    if re.search(r"\b(end|last day)\b", s):
+    if re.search(r"\b(end of|last day of)\b", s):
         return date(year, month, last_day)
-    if re.search(r"\b(beginning|start|first day|first)\b", s):
+    if re.search(r"\b(beginning of|start of|first day of)\b", s):
         return date(year, month, 1)
 
     return None
