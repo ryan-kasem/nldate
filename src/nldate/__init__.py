@@ -281,9 +281,85 @@ def _parse_relative_offset(s: str, today: date) -> date | None:
     return anchor + timedelta(days=days)
 
 
+_MONTHS: dict[str, int] = {
+    "january": 1,
+    "february": 2,
+    "march": 3,
+    "april": 4,
+    "may": 5,
+    "june": 6,
+    "july": 7,
+    "august": 8,
+    "september": 9,
+    "october": 10,
+    "november": 11,
+    "december": 12,
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "oct": 10,
+    "nov": 11,
+    "dec": 12,
+}
+
+_HOLIDAYS: dict[str, tuple[int, int]] = {
+    "christmas": (12, 25),
+    "christmas day": (12, 25),
+    "new year": (1, 1),
+    "new year's day": (1, 1),
+    "new years day": (1, 1),
+    "halloween": (10, 31),
+    "valentine's day": (2, 14),
+    "valentines day": (2, 14),
+    "st patrick's day": (3, 17),
+    "st patricks day": (3, 17),
+    "independence day": (7, 4),
+    "april fools": (4, 1),
+    "april fools day": (4, 1),
+}
+
+
 def _parse_calendar_landmark(s: str, today: date) -> date | None:
-    """Handle 'end of month', 'beginning of next month', 'start of year', etc."""
+    """Handle 'end of month', 'beginning of next month', holiday names, etc."""
     import calendar
+
+    # Holiday names like "Christmas 2025", "Christmas", "New Year's Day"
+    for holiday, (hmonth, hday) in _HOLIDAYS.items():
+        if holiday in s:
+            # Try to extract a year
+            m = re.search(r"\b(20\d{2})\b", s)
+            year = int(m.group(1)) if m else today.year
+            return date(year, hmonth, hday)
+
+    # "the first/last of <month>" or "the first/last of next month"
+    m = re.match(r"^the\s+(first|last|1st)\s+of\s+(next\s+month|last\s+month|(?:\w+))$", s)
+    if m:
+        pos = m.group(1)
+        period = m.group(2).strip()
+        if period == "next month":
+            if today.month == 12:
+                year, month = today.year + 1, 1
+            else:
+                year, month = today.year, today.month + 1
+        elif period == "last month":
+            if today.month == 1:
+                year, month = today.year - 1, 12
+            else:
+                year, month = today.year, today.month - 1
+        elif period in _MONTHS:
+            month = _MONTHS[period]
+            year = today.year
+        else:
+            return None
+        last_day = calendar.monthrange(year, month)[1]
+        if pos in ("first", "1st"):
+            return date(year, month, 1)
+        return date(year, month, last_day)
 
     # Determine which month/year we're talking about
     if "next month" in s:
@@ -305,7 +381,7 @@ def _parse_calendar_landmark(s: str, today: date) -> date | None:
 
     if re.search(r"\b(end|last day)\b", s):
         return date(year, month, last_day)
-    if re.search(r"\b(beginning|start|first day)\b", s):
+    if re.search(r"\b(beginning|start|first day|first)\b", s):
         return date(year, month, 1)
 
     return None
