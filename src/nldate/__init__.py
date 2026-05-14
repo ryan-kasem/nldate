@@ -52,7 +52,7 @@ def parse(s: str, today: date | None = None) -> date:
     if result is not None:
         return result
 
-    # Calendar landmarks
+    # Calendar landmarks ("end of month", "beginning of next month", etc.)
     result = _parse_calendar_landmark(normalized, today)
     if result is not None:
         return result
@@ -123,6 +123,7 @@ _WORD_NUMBERS: dict[str, int] = {
     "thirty": 30,
     "a": 1,
     "an": 1,
+    "half": 0,  # "half a week" etc - treated as 0 for simplicity
 }
 
 _NAMED_DATES: dict[str, int] = {
@@ -131,33 +132,6 @@ _NAMED_DATES: dict[str, int] = {
     "yesterday": -1,
     "the day after tomorrow": 2,
     "the day before yesterday": -2,
-}
-
-_MONTHS: dict[str, int] = {
-    "january": 1,
-    "february": 2,
-    "march": 3,
-    "april": 4,
-    "may": 5,
-    "june": 6,
-    "july": 7,
-    "august": 8,
-    "september": 9,
-    "october": 10,
-    "november": 11,
-    "december": 12,
-    "jan": 1,
-    "feb": 2,
-    "mar": 3,
-    "apr": 4,
-    "jun": 6,
-    "jul": 7,
-    "aug": 8,
-    "sep": 9,
-    "sept": 9,
-    "oct": 10,
-    "nov": 11,
-    "dec": 12,
 }
 
 
@@ -237,12 +211,14 @@ def _parse_ago(s: str, today: date) -> date | None:
 
 def _parse_simple_offset(s: str, today: date) -> date | None:
     """Handle 'in X units' and 'X units from now/today'."""
+    # "in <duration>"
     m = re.match(r"^in\s+(.+)$", s)
     if m:
         days = _parse_compound_duration(m.group(1))
         if days is not None:
             return today + timedelta(days=days)
 
+    # "<duration> from now/today"
     m2 = re.match(r"^(.+?)\s+from\s+(?:now|today)$", s)
     if m2:
         days = _parse_compound_duration(m2.group(1))
@@ -306,34 +282,10 @@ def _parse_relative_offset(s: str, today: date) -> date | None:
 
 
 def _parse_calendar_landmark(s: str, today: date) -> date | None:
-    """Handle end/start of month, next/last week, next/last month, etc."""
+    """Handle 'end of month', 'beginning of next month', 'start of year', etc."""
     import calendar
 
-    # next/last week -> Monday of next/last week
-    if s == "next week":
-        days_ahead = 7 - today.weekday()  # days until next Monday
-        return today + timedelta(days=days_ahead)
-    if s == "last week":
-        days_back = today.weekday() + 7  # days back to last Monday
-        return today - timedelta(days=days_back)
-
-    # next/last/this month -> same day next/last month
-    if s in ("next month", "this month next"):
-        if today.month == 12:
-            return date(today.year + 1, 1, today.day)
-        return date(today.year, today.month + 1, today.day)
-    if s == "last month":
-        if today.month == 1:
-            return date(today.year - 1, 12, today.day)
-        return date(today.year, today.month - 1, today.day)
-
-    # next/last year
-    if s == "next year":
-        return date(today.year + 1, today.month, today.day)
-    if s == "last year":
-        return date(today.year - 1, today.month, today.day)
-
-    # Determine target month
+    # Determine which month/year we're talking about
     if "next month" in s:
         if today.month == 12:
             year, month = today.year + 1, 1
@@ -351,9 +303,9 @@ def _parse_calendar_landmark(s: str, today: date) -> date | None:
 
     last_day = calendar.monthrange(year, month)[1]
 
-    if re.search(r"\bend of\b", s) or re.search(r"\blast day of\b", s):
+    if re.search(r"\b(end|last day)\b", s):
         return date(year, month, last_day)
-    if re.search(r"\b(beginning of|start of|first day of)\b", s):
+    if re.search(r"\b(beginning|start|first day)\b", s):
         return date(year, month, 1)
 
     return None
