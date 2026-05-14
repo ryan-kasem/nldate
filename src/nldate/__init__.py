@@ -27,20 +27,35 @@ def parse(s: str, today: date | None = None) -> date:
 
     normalized = s.strip().lower()
 
-    # Try custom relative-offset patterns first ("X before/after Y")
-    result = _parse_relative_offset(normalized, today)
-    if result is not None:
-        return result
+    # Named relative dates
+    for name, delta in _NAMED_DATES.items():
+        if normalized == name:
+            return today + timedelta(days=delta)
 
-    # Handle weekday expressions directly (dateparser ignores RELATIVE_BASE for these)
+    # Weekday expressions ("next Monday", "last Friday", bare weekday)
     result = _parse_weekday_expression(normalized, today)
     if result is not None:
         return result
 
-    # Handle named relative dates
-    for name, delta in _NAMED_DATES.items():
-        if normalized == name:
-            return today + timedelta(days=delta)
+    # "X ago" shorthand
+    result = _parse_ago(normalized, today)
+    if result is not None:
+        return result
+
+    # "in <duration>" / "<duration> from now/today"
+    result = _parse_simple_offset(normalized, today)
+    if result is not None:
+        return result
+
+    # "<duration> before/after <anchor>"
+    result = _parse_relative_offset(normalized, today)
+    if result is not None:
+        return result
+
+    # Calendar landmarks ("end of month", "beginning of next month", etc.)
+    result = _parse_calendar_landmark(normalized, today)
+    if result is not None:
+        return result
 
     # Delegate to dateparser for everything else
     settings: dict[str, object] = {
@@ -57,7 +72,7 @@ def parse(s: str, today: date | None = None) -> date:
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers
+# Constants
 # ---------------------------------------------------------------------------
 
 _UNIT_DAYS: dict[str, int] = {
@@ -108,9 +123,10 @@ _WORD_NUMBERS: dict[str, int] = {
     "thirty": 30,
     "a": 1,
     "an": 1,
+    "half": 0,  # "half a week" etc - treated as 0 for simplicity
 }
 
-_NAMED_DATES = {
+_NAMED_DATES: dict[str, int] = {
     "today": 0,
     "tomorrow": 1,
     "yesterday": -1,
@@ -119,15 +135,18 @@ _NAMED_DATES = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
 def _date_to_datetime(d: date) -> object:
-    """Convert date to datetime for dateparser settings."""
     from datetime import datetime
 
     return datetime(d.year, d.month, d.day)
 
 
 def _parse_number(token: str) -> int | None:
-    """Parse a word or digit token into an integer."""
     token = token.strip()
     if token.isdigit():
         return int(token)
@@ -158,7 +177,7 @@ def _parse_compound_duration(text: str) -> int | None:
 
 
 def _parse_weekday_expression(s: str, today: date) -> date | None:
-    """Handle 'next Monday', 'last Friday', 'this Wednesday', 'Monday', etc."""
+    """Handle 'next Monday', 'last Friday', 'this Wednesday', bare weekday."""
     m = re.match(r"^(next|last|this)?\s*(\w+)$", s.strip())
     if not m:
         return None
@@ -172,47 +191,55 @@ def _parse_weekday_expression(s: str, today: date) -> date | None:
         delta = -((current_wd - target_wd) % 7)
         if delta == 0:
             delta = -7
-    elif qualifier in ("next", "this", ""):
+    else:
         delta = (target_wd - current_wd) % 7
         if delta == 0:
             delta = 7
-    else:
-        return None
     return today + timedelta(days=delta)
 
 
+def _parse_ago(s: str, today: date) -> date | None:
+    """Handle 'X days/weeks/months/years ago'."""
+    m = re.match(r"^(.+?)\s+ago$", s)
+    if not m:
+        return None
+    days = _parse_compound_duration(m.group(1))
+    if days is None:
+        return None
+    return today - timedelta(days=days)
+
+
+def _parse_simple_offset(s: str, today: date) -> date | None:
+    """Handle 'in X units' and 'X units from now/today'."""
+    # "in <duration>"
+    m = re.match(r"^in\s+(.+)$", s)
+    if m:
+        days = _parse_compound_duration(m.group(1))
+        if days is not None:
+            return today + timedelta(days=days)
+
+    # "<duration> from now/today"
+    m2 = re.match(r"^(.+?)\s+from\s+(?:now|today)$", s)
+    if m2:
+        days = _parse_compound_duration(m2.group(1))
+        if days is not None:
+            return today + timedelta(days=days)
+
+    return None
+
+
 def _resolve_anchor(anchor: str, today: date) -> date | None:
-    """Resolve an anchor expression (today, tomorrow, a fixed date, etc.)."""
+    """Resolve an anchor expression to a date."""
     anchor = anchor.strip()
 
-    # Named relative dates
     for name, delta in _NAMED_DATES.items():
         if anchor == name:
             return today + timedelta(days=delta)
 
-    # "next <weekday>" / "last <weekday>" / "this <weekday>" / bare weekday
-    m = re.match(r"^(next|last|this)?\s*(\w+)$", anchor)
-    if m:
-        qualifier = m.group(1) or ""
-        day_name = m.group(2)
-        if day_name in _WEEKDAYS:
-            target_wd = _WEEKDAYS[day_name]
-            current_wd = today.weekday()
-            if qualifier == "next":
-                delta = (target_wd - current_wd) % 7
-                if delta == 0:
-                    delta = 7
-            elif qualifier == "last":
-                delta = -((current_wd - target_wd) % 7)
-                if delta == 0:
-                    delta = -7
-            else:
-                delta = (target_wd - current_wd) % 7
-                if delta == 0:
-                    delta = 7
-            return today + timedelta(days=delta)
+    result = _parse_weekday_expression(anchor, today)
+    if result is not None:
+        return result
 
-    # Delegate fixed dates to dateparser
     from datetime import datetime
 
     settings: dict[str, object] = {
@@ -228,45 +255,57 @@ def _resolve_anchor(anchor: str, today: date) -> date | None:
 
 
 def _parse_relative_offset(s: str, today: date) -> date | None:
-    """Handle patterns like 'N units before/after ANCHOR'."""
-    # Pattern: <duration> before/after <anchor>
+    """Handle '<duration> before/after <anchor>'."""
     m = re.match(
-        r"^(.+?)\s+(before|after|from|prior to|ago)\s+(.+)$",
+        r"^(.+?)\s+(before|after|from|prior to)\s+(.+)$",
         s,
         re.IGNORECASE,
     )
-    if m:
-        duration_text = m.group(1).strip()
-        direction = m.group(2).strip().lower()
-        anchor_text = m.group(3).strip()
+    if not m:
+        return None
 
-        duration_text = re.sub(r"^in\s+", "", duration_text)
+    duration_text = re.sub(r"^in\s+", "", m.group(1).strip())
+    direction = m.group(2).strip().lower()
+    anchor_text = m.group(3).strip()
 
-        days = _parse_compound_duration(duration_text)
-        if days is None:
-            return None
+    days = _parse_compound_duration(duration_text)
+    if days is None:
+        return None
 
-        anchor = _resolve_anchor(anchor_text, today)
-        if anchor is None:
-            return None
+    anchor = _resolve_anchor(anchor_text, today)
+    if anchor is None:
+        return None
 
-        if direction in ("before", "prior to"):
-            return anchor - timedelta(days=days)
+    if direction in ("before", "prior to"):
+        return anchor - timedelta(days=days)
+    return anchor + timedelta(days=days)
+
+
+def _parse_calendar_landmark(s: str, today: date) -> date | None:
+    """Handle 'end of month', 'beginning of next month', 'start of year', etc."""
+    import calendar
+
+    # Determine which month/year we're talking about
+    if "next month" in s:
+        if today.month == 12:
+            year, month = today.year + 1, 1
         else:
-            return anchor + timedelta(days=days)
+            year, month = today.year, today.month + 1
+    elif "last month" in s or "previous month" in s:
+        if today.month == 1:
+            year, month = today.year - 1, 12
+        else:
+            year, month = today.year, today.month - 1
+    elif "next year" in s:
+        year, month = today.year + 1, today.month
+    else:
+        year, month = today.year, today.month
 
-    # "in <duration>" 
-    m3 = re.match(r"^in\s+(.+)$", s)
-    if m3:
-        days = _parse_compound_duration(m3.group(1))
-        if days is not None:
-            return today + timedelta(days=days)
+    last_day = calendar.monthrange(year, month)[1]
 
-    # "<duration> from now/today"
-    m4 = re.match(r"^(.+?)\s+from\s+(?:now|today)$", s)
-    if m4:
-        days = _parse_compound_duration(m4.group(1))
-        if days is not None:
-            return today + timedelta(days=days)
+    if re.search(r"\b(end|last day)\b", s):
+        return date(year, month, last_day)
+    if re.search(r"\b(beginning|start|first day)\b", s):
+        return date(year, month, 1)
 
     return None
